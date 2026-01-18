@@ -2,7 +2,7 @@ import polars as pl
 
 
 ## Aplano json y deduplico ordenes ya que pueden venir duplicadas del api
-def dedup_orders(api_orders:dict) -> pl.DataFrame:
+def dedup_orders(api_orders:list) -> pl.DataFrame:
     df_api = pl.json_normalize(api_orders)
     df_dedup = df_api.unique("order_id")
     print("Registros de la api deduplicados por order_id")
