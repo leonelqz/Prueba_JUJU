@@ -1,12 +1,4 @@
 import polars as pl
-import logging
-
-
-## Configuro logs
-logging.basicConfig(filename='logs.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
-print = logger.info
-print("")
 
 
 ## Aplano json y deduplico ordenes ya que pueden venir duplicadas del api
@@ -28,7 +20,8 @@ def get_fact_sales(df_api:pl.DataFrame) -> pl.DataFrame:
         ).with_columns(
             pl.col("created_at").str.to_datetime()
         ).with_columns(
-            order_date = pl.col("created_at").dt.date()
+            order_date = pl.col("created_at").dt.date(),
+            is_valid = pl.col("created_at").is_not_null()
         )
     )
 
@@ -63,4 +56,23 @@ def get_dim_product(df_api:pl.DataFrame, df_products:pl.DataFrame) -> pl.DataFra
     return (
         df_api.explode("items").unnest("items").select("sku").unique("sku").join(df_products, on="sku")
     )
+
+
+## Defino estado de ejecucion (idempotencia e incrementalidad) guardando el registro con la fecha mas reciente en un json de estado
+def store_last_state(fact_sales):
+    last_processed = fact_sales.filter( 
+        (pl.col("created_at")==pl.col("created_at").max())
+        & (pl.col("is_valid")==True)   ## Con esta col is_valid excluyo posibles ordenes que NO tengan created_at
+
+    ).with_columns(  ## Debo extraer enteros puesto que en el input dado el order_id esta compuesto por string + entero
+        int_order_id=pl.col("order_id").str.extract(r"(\d+)").cast(pl.Int64),
+        created_at=pl.col("created_at").dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+    ).filter(   ## Con este segundo filtro gestiono los casos borde en que un mismo timestamp comparte varias ordenes validas
+        pl.col("int_order_id") == pl.col("int_order_id").max()
+    )
+
+    last_processed.select("order_id", "created_at").write_ndjson("state.json")   ## En prod este archivo de estado se almacena en un "backend remoto", es decir un bucket, analogo a lo que hace terraform
+    print("Estado del job actualizado en state.json")
+
 
