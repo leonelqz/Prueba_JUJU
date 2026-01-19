@@ -1,7 +1,7 @@
 ## Modelado
 Con base en el json de muestra y las notas dadas, en las que se menciona que "items" es un array, se entiende que cada orden puede contener varios items; por lo cual, siguiendo a Kimball, la fact table se diseña con el grano mas fino, que en este caso es la informacion que viene en items (cantidad y precio). NO definí la fact table como "fact_order" como se sugería en el enunciado; en su lugar, almaceno los atributos de la orden (amount, currency, source, promo) en una dimension independiente (dim_order), y defino la fact table como "fact_sales", considerando que una venta neta es la cantidad de productos por su respectivo precio unitario. De esa manera puedo responder fácilmente preguntas relativas a productos, como por ejemplo "productos más vendidos". 
 
-En `sql/duckdb_ddl.sql` está el esquema de las 4 tablas: dim_order, dim_product, dim_user, fact_sales
+En `sql/duckdb_ddl.sql` está el esquema de las 4 tablas: dim_order, dim_product, dim_user, fact_sales.
 
 
 #### Queries de ejemplo (se ejecutaron con duckdb)
@@ -61,9 +61,9 @@ El output dado por el LLM es el que está en `sample_data`.
 
 
 ## Transformaciones: Polars en lugar de PySpark o Pandas
-Elegí trabajar con polars en lugar de PySpark por practicidad para encarar una de los situaciones planteadas, y es que la fuente principal es data semi-estructura (json), y en ese caso, el metodo `json_normalize()` resulta **muy util** para estructurar esa data en forma tabular, que es finalmente como será almacenada en el Data Warehouse. PySpark no cuenta con esa funcion `json_normalize()`, y ni siquiera usando la api de pandas de PySpark, porque pandas pone problema por los tipos de datos, a diferencia de polars cuyos tipos de datos son homologables a los de db relacionales. Entonces esa es la razón principal por la cual elegí trabajar con polars para hacer las transformaciones. Además, polars puede ser igual de eficiente que Spark porque (además de estar escrito en Rust) aprovecha todos lo nucleos de cpu para distribuir el procesamiento; y tambien permite lazy_evaluation (no usado en este caso).
+Elegí trabajar con polars en lugar de PySpark por practicidad para encarar una de los situaciones planteadas, y es que la fuente principal de datos es semi-estructura (json), y en ese caso, el metodo `json_normalize()` resulta **muy util** para estructurar esa data en forma tabular, que es finalmente como será almacenada en el Data Warehouse. PySpark no cuenta con ese metodo `json_normalize()`, ni siquiera usando la api de pandas de PySpark, porque pandas pone problema por los tipos de datos, a diferencia de polars cuyos tipos de datos son homologables a los de db relacionales. Entonces esa es la razón principal por la cual elegí trabajar con polars para hacer las transformaciones. Además, polars es más eficiente que pandas, y puede ser igual de eficiente que Spark porque tambien permite aprovechar todos los nucleos de cpu para distribuir el procesamiento, y tambien permite lazy evaluation (no usado en este caso).
 
-Respecto a la **robustez** mencionada en el enunciado, así los datos vengan malformados del api, el metodo `json_normalize()` de polars los gestiona con null; de modo que al aplicar la transformacion que aplana la datal json en un DataFrame, a pesar de que no todos los registros tengan los mismos campos, el DataFrame se crea sin incoveniente, mapeando todos los campos y dejan null donde corresponda.
+Respecto a la **robustez** mencionada en el enunciado, así los datos vengan malformados del api, el metodo `json_normalize()` de polars los gestiona con null. De modo que al aplicarlo se mapean todos los campos de todos los niveles del json y deja null donde corresponda, a pesar de que no todos los registros del json compartan los mismos campos.
 
 
 ## Retries
@@ -71,7 +71,9 @@ La estrategia usada para gestionar retries es aplicar un backoff exponencial. Es
 
 
 ## Idempotencia
-Para lograr este objetivo, tomé como referencia el funcionamiento de terraform, el cual crea y almacena en un archivo .tfstate la configuración actual de la infra levantada, de modo que cuando se añade un nuevo recurso a la infra, no levanta todo nuevamente sino consulta el estado actual en el .tfstate y lo compara con el estado deseado. Así, solo levanta lo que no coincida con el estado actual. Con esa idea en mente, definí un archivo `state.json` que almacena el "order_id" y
+Para lograr este objetivo, tomé como referencia el funcionamiento de terraform, el cual crea y almacena en un archivo .tfstate la configuración actual de la infra levantada, de modo que cuando se añade un nuevo recurso a la infra, no levanta todo nuevamente sino consulta el estado actual en el .tfstate y lo compara con el estado deseado. Así, solo levanta lo que no coincida con el estado actual. Con esa idea en mente, definí un archivo `state.json` que almacena el "order_id" y el"created_at" de la orden con la fecha mayor, es decir, la fecha más reciente de todo el conjunto de registros procesado. Luego, cada vez que se ejecuta el job, se llama a la funcion `get_current_state()` que obtiene la fecha almacenada en `state.json` y evalua que en los registros "del api" no exista un registro con el mismo "created_at" y "order_id" del state.json; de ser así se termina el programa y no se ejecuta el resto del job. Ojo! en un caso real no se cosumiria todo el api, la condicion sería que devuelva solo registros con "created_at" > current_state.
+
+Para gestionar los casos borde en que varios registros compartan el mismo "created_at", y que ese "created_at" quede en state.json representando el "estado actual" se usa el "order_id" (suponiendo ese id como un incremental). Esto se comenta en las lineas 61 a 71 de transforms.py
 
 
 ## Monitoreo
