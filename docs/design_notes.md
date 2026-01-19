@@ -55,7 +55,7 @@ Le pedí a un LLM que generara el archivo json con "realistic fake data" que sim
 - Uno o más item por orden
 - Registros con created_at null o sin items o sin metadata
 
-Las tablas "users" y "products" tambien las generó sinteticamente un LLM en formato csv, consistente con los ids de generados en el json.
+Las tablas "users" y "products" tambien las generó sinteticamente un LLM en formato csv, y son consistentes con los ids del json generado.
 
 El output dado por el LLM es el que está en `sample_data`.
 
@@ -63,7 +63,7 @@ El output dado por el LLM es el que está en `sample_data`.
 ## Transformaciones: Polars en lugar de PySpark o Pandas
 Elegí trabajar con polars en lugar de PySpark por practicidad para encarar una de los situaciones planteadas, y es que la fuente principal de datos es semi-estructura (json), y en ese caso, el metodo `json_normalize()` resulta **muy util** para estructurar esa data en forma tabular, que es finalmente como será almacenada en el Data Warehouse. PySpark no cuenta con ese metodo `json_normalize()`, ni siquiera usando la api de pandas de PySpark, porque pandas pone problema por los tipos de datos, a diferencia de polars cuyos tipos de datos son homologables a los de db relacionales. Entonces esa es la razón principal por la cual elegí trabajar con polars para hacer las transformaciones. Además, polars es más eficiente que pandas, y puede ser igual de eficiente que Spark porque tambien permite aprovechar todos los nucleos de cpu para distribuir el procesamiento, y tambien permite lazy evaluation (no usado en este caso).
 
-Respecto a la **robustez** mencionada en el enunciado, así los datos vengan malformados del api, el metodo `json_normalize()` de polars los gestiona con null. De modo que al aplicarlo se mapean todos los campos de todos los niveles del json y deja null donde corresponda, a pesar de que no todos los registros del json compartan los mismos campos.
+Respecto a la **robustez** mencionada en el enunciado, así los datos vengan malformados del api, el metodo `json_normalize()` de polars los gestiona con null. De modo que al aplicarlo, se mapean todos los campos de todos los niveles del json (controlable con parametro "max_level") y deja null donde corresponda, es decir, si un registro no tiene un campo que otro registro sí. Así, a pesar de que no todos los registros del json compartan los mismos campos, se obtiene un DataFrame con la data integra, y con el que se pueden realizar operaciones como explode() y unnest() para conseguir los objetivos planteados en el modelado.
 
 
 ## Retries
@@ -71,15 +71,15 @@ La estrategia usada para gestionar retries es aplicar un backoff exponencial. Es
 
 
 ## Idempotencia
-Para lograr este objetivo, tomé como referencia el funcionamiento de terraform, el cual crea y almacena en un archivo .tfstate la configuración actual de la infra levantada, de modo que cuando se añade un nuevo recurso a la infra, no levanta todo nuevamente sino consulta el estado actual en el .tfstate y lo compara con el estado deseado. Así, solo levanta lo que no coincida con el estado actual. Con esa idea en mente, definí un archivo `state.json` que almacena el "order_id" y el"created_at" de la orden con la fecha mayor, es decir, la fecha más reciente de todo el conjunto de registros procesado. Luego, cada vez que se ejecuta el job, se llama a la funcion `get_current_state()` que obtiene la fecha almacenada en `state.json` y evalua que en los registros "del api" no exista un registro con el mismo "created_at" y "order_id" del state.json; de ser así se termina el programa y no se ejecuta el resto del job. Ojo! en un caso real no se cosumiria todo el api, la condicion sería que devuelva solo registros con "created_at" > current_state.
+Para lograr este objetivo, tomé como referencia el funcionamiento de terraform, el cual crea y almacena en un archivo .tfstate la configuración actual de la infra levantada, de modo que cuando se añade un nuevo recurso a la infra, no levanta todo nuevamente sino consulta el estado actual en el .tfstate y lo compara con el estado deseado. Así, solo levanta lo que no coincida con el estado actual. Con esa idea en mente, definí un archivo `state.json` que almacena el "order_id" y el"created_at" de la orden con la fecha mayor, es decir, la fecha más reciente de todo el conjunto de registros procesado. Luego, cada vez que se ejecuta el job, se llama a la funcion `get_current_state()` que obtiene la fecha almacenada en `state.json` y evalua que en los registros "del api" no exista un registro con el mismo "created_at" y "order_id" del state.json; de NO ser así se termina el programa y no se ejecuta el resto del job. Ojo! en un caso real no se cosumiria todo el api, la condicion sería que devuelva solo registros con "created_at" > current_state.
 
-Para gestionar los casos borde en que varios registros compartan el mismo "created_at", y que ese "created_at" quede en state.json representando el "estado actual" se usa el "order_id" (suponiendo ese id como un incremental). Esto se comenta en las lineas 61 a 71 de transforms.py
+Para gestionar los casos borde en que varios registros compartan el mismo "created_at", y que ese "created_at" quede en state.json representando el "estado actual" se usa el "order_id" (suponiendo ese id como un incremental). Esto se comenta en las lineas 61 a 71 de transforms.py.
 
 
 ## Monitoreo
 En producción (nube) lo que haría es: empaquetar mi codigo fuente en una imagen de docker, mandarla a un artifact registry, y desplegarla en un servicio serverless como Cloud Run (GCP) o Lambda (AWS). Cualquiera de esos servicios se integran con la suite de monitoring (CloudWatch, CloudMonitoring) de la respectiva nube, donde se pueden consultar las principales métricas de interes: cantidad de ejecuciones, recursos utilizados (cpu, memoria), y la trazabilidad que dejan los logs. Lo importante con respecto a ese tema de los logs es que el programador incluya "puntos de control" (prints) en su código, de acuerdo al flujo de ejecución, para en caso de tener que debuggear, encontrar facilmente la fuente del problema. 
 
-En nuestro caso, en el codigo incluí una serie de prints que permiten llevar trazabilidad de cada ejecución. Suponiendo que el ETL se ejecute on-prem (donde no se cuenta con servicios de monitoreo integrado como en la nube), se definió la funcion `setup_loggin()` que permite redirigir los prints a un logs.log para poder almacenar el historico. En ese caso descomentar la linea 2 de `etl_job.py`
+En nuestro caso, en el codigo incluí una serie de prints que permiten llevar trazabilidad de cada ejecución. Suponiendo que el ETL se ejecute on-prem (donde no se cuenta con servicios de monitoreo integrado como en la nube), se definió la funcion `setup_loggin()` que permite redirigir los prints a un archivo logs.log para poder almacenar el historico de ejecuciones. En ese caso descomentar la linea 2 de `etl_job.py`.
 
 Además, en el script principal se gestionan las excepciones invocando la funcion `send_mail()` que notifica por correo la alerta en caso de que una ejecución falle, de modo que se pueda gestionar rapidamente el eventual bug.
 
