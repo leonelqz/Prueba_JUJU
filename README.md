@@ -30,6 +30,8 @@ python -m src.etl_job --since 2025-12-24T00:00:00
 
  Para ver la diferencia del resultado con y sin `--since`, ir a `output/raw/` y consultar el json generado en cada ejecucion (VS: click derecho > format document). En el primer caso contiene 3626 lineas; en el segundo 24474 lineas.
 
+
+- Ejecuta tests
 ```
 python -m pytest
 ```
